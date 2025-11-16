@@ -1,4 +1,4 @@
-name: Build OnePlus 12R Kernel
+name: Build OnePlus 12R Kernel (AOSP Clang LLVM-only)
 
 on:
   workflow_dispatch:
@@ -6,20 +6,26 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 180
 
     steps:
-    - name: Checkout this repo
+    - name: Checkout workflow repo
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 1
 
     - name: Install build dependencies
       run: |
         sudo apt update
-        sudo apt install -y bc bison flex build-essential zip unzip \
-          libssl-dev python3 python3-pip libc6-dev libncurses5-dev libncursesw5-dev \
-          libelf-dev libelf1 zlib1g-dev dwarves
+        sudo apt install -y --no-install-recommends \
+          bc bison flex build-essential zip unzip \
+          libssl-dev python3 python3-pip libc6-dev \
+          libncurses5-dev libncursesw5-dev libelf-dev zlib1g-dev dwarves \
+          git wget make pkg-config
 
     - name: Create directory structure
-      run: mkdir -p kernel/oneplus
+      run: |
+        mkdir -p kernel/oneplus
 
     - name: Clone kernel source (sm8550)
       run: |
@@ -31,46 +37,78 @@ jobs:
         git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
           -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
 
-    - name: Download toolchains
+    - name: Add CI config fragment (disable problematic Oplus devinfo + optional BTF disable)
       run: |
-        mkdir -p toolchains/clang toolchains/gcc
+        mkdir -p kernel/oneplus/sm8550/ci_fragments
+        cat > kernel/oneplus/sm8550/ci_fragments/disable_oplus_devinfo.config <<'EOF'
+# CI-only overrides: prevent some Oplus drivers from being built into vmlinux
+# (Adjust if you want these in vmlinux later)
+# CONFIG_OPLUS_FEATURE_DUMP_DEVICE_INFO is not set
+# CONFIG_OPLUS_FEATURE_THEIA is not set
+# CONFIG_OPLUS_FEATURE_FEEDBACK is not set
 
-        wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz \
-          -O toolchains/gcc.tar.xz
+# Optional: disable BTF generation in CI to avoid pahole issues
+# CONFIG_DEBUG_INFO_BTF is not set
+EOF
+        echo "CI fragment:"
+        sed -n '1,120p' kernel/oneplus/sm8550/ci_fragments/disable_oplus_devinfo.config
 
-        wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz \
-          -O toolchains/clang.tar.gz
-
-        tar -xf toolchains/gcc.tar.xz -C toolchains/gcc --strip-components=1
+    - name: Download official AOSP Clang (r547379) - LLVM 20
+      run: |
+        mkdir -p toolchains/clang
+        # Official prebuilt tarball URL (AOSP prebuilts archive for the given tag)
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/llvm-r547379-release/clang.tar.gz"
+        echo "Downloading AOSP Clang (r547379) from googlesource..."
+        wget -q --show-progress "$CLANG_URL" -O toolchains/clang.tar.gz
+        echo "Extracting into toolchains/clang ..."
+        # Clang archive sometimes extracts files at top-level; extract into our folder
         tar -xf toolchains/clang.tar.gz -C toolchains/clang --strip-components=0
+        echo "Contents of toolchains/clang/bin (trimmed):"
+        ls -1 toolchains/clang/bin | sed -n '1,120p' || true
 
-    - name: Export PATH
+    - name: Verify Clang version
       run: |
-        echo "$PWD/toolchains/clang/bin" >> $GITHUB_PATH
-        echo "$PWD/toolchains/gcc/bin" >> $GITHUB_PATH
+        export PATH="$PWD/toolchains/clang/bin:$PATH"
+        clang --version | head -n 4
 
-    - name: Build kernel
+    - name: Export LLVM toolchain to PATH
+      run: |
+        echo "$PWD/toolchains/clang/bin" >> "$GITHUB_PATH"
+
+    - name: Build kernel (out-of-tree, merge vendor + CI fragments, LLVM-only)
       working-directory: kernel/oneplus/sm8550
+      env:
+        PATH: ${{ github.workspace }}/toolchains/clang/bin:${{ env.PATH }}
       run: |
+        set -euxo pipefail
+
         export ARCH=arm64
         export SUBARCH=arm64
         export O=out
         export KCONFIG_CONFIG=$O/.config
 
+        # Clean tree so merge_config doesn't mark the source dirty
         make mrproper
 
-        mkdir -p $O
+        mkdir -p "$O"
 
+        echo "=== gki_defconfig ==="
         make O=$O ARCH=arm64 gki_defconfig
 
+        echo "=== merging vendor configs + CI overrides (CI fragment last) ==="
         bash scripts/kconfig/merge_config.sh -m \
           $O/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
-          arch/arm64/configs/vendor/debugfs.config
+          arch/arm64/configs/vendor/debugfs.config \
+          ci_fragments/disable_oplus_devinfo.config
 
+        echo "=== olddefconfig ==="
         make O=$O ARCH=arm64 olddefconfig
 
+        echo "=== building kernel with AOSP Clang (LLVM-only) ==="
+        # Use LLVM tools provided within the Clang prebuilts.
+        # KCFLAGS disables the frame-larger-than warning treated as error.
         make -j$(nproc) O=$O ARCH=arm64 \
           KCFLAGS="-Wno-frame-larger-than=" \
           CC=clang \
@@ -80,24 +118,51 @@ jobs:
           STRIP=llvm-strip \
           OBJCOPY=llvm-objcopy \
           OBJDUMP=llvm-objdump \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          CROSS_COMPILE=aarch64-none-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-none-linux-gnueabi-
+          HOSTCC=gcc
 
-    - name: Clone AnyKernel3
+    - name: Show output files
+      run: |
+        echo "--- out/arch/arm64/boot ---"
+        ls -al kernel/oneplus/sm8550/out/arch/arm64/boot || true
+        echo "--- kernel Image candidates ---"
+        find kernel/oneplus/sm8550/out -maxdepth 5 -type f -name 'Image*' -o -name 'vmlinuz*' -o -name '*.gz' -print || true
+
+    - name: Clone AnyKernel3 and prepare flashable ZIP
       run: |
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 anykernel
-        rm -rf anykernel/modules
-        cp kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz anykernel/
+        rm -rf anykernel/modules || true
 
-    - name: Create flashable ZIP
-      run: |
+        # copy kernel image (prefer Image.gz if available, else Image)
+        SRC_IMG=""
+        if [ -f kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz ]; then
+          SRC_IMG=kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz
+        elif [ -f kernel/oneplus/sm8550/out/arch/arm64/boot/Image ]; then
+          SRC_IMG=kernel/oneplus/sm8550/out/arch/arm64/boot/Image
+        elif [ -f kernel/oneplus/sm8550/out/arch/arm64/boot/vmlinuz ]; then
+          SRC_IMG=kernel/oneplus/sm8550/out/arch/arm64/boot/vmlinuz
+        fi
+
+        if [ -n "$SRC_IMG" ]; then
+          cp "$SRC_IMG" anykernel/
+        else
+          echo "WARNING: kernel image not found; packaging may fail"
+        fi
+
+        # If dtbo or dtb present, copy useful files (optional)
+        if [ -f kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img ]; then
+          cp kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img anykernel/ || true
+        fi
+
         cd anykernel
-        zip -r9 "../OnePlus12R-Kernel.zip" * -x .git README.md
+        zip -r9 "../OnePlus12R-Kernel-$(date -u +%Y%m%dT%H%M%SZ).zip" * -x .git README.md || true
+        cd ..
+
+    - name: List ZIP
+      run: ls -al OnePlus12R-Kernel-*.zip || true
 
     - name: Upload kernel zip to Release
       uses: softprops/action-gh-release@v1
       with:
-        files: OnePlus12R-Kernel.zip
+        files: OnePlus12R-Kernel-*.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
