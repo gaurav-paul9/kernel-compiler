@@ -33,7 +33,8 @@ jobs:
 
     - name: Download toolchains
       run: |
-        mkdir -p toolchains
+        mkdir -p toolchains/clang
+        mkdir -p toolchains/gcc
 
         echo "Downloading GCC 14.2"
         wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -O toolchains/gcc.tar.xz
@@ -41,20 +42,15 @@ jobs:
         echo "Downloading Clang r450784e"
         wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz -O toolchains/clang.tar.gz
 
-        echo "Extracting toolchains..."
-        tar -xf toolchains/gcc.tar.xz -C toolchains/
-        tar -xf toolchains/clang.tar.gz -C toolchains/
+        echo "Extracting GCC..."
+        tar -xf toolchains/gcc.tar.xz -C toolchains/gcc --strip-components=1
 
-        echo "Renaming directories..."
-        mv toolchains/arm-gnu-toolchain-* toolchains/gcc || true
+        echo "Extracting Clang..."
+        # Clang archive extracts directly into current folder → extract into clang directory
+        tar -xf toolchains/clang.tar.gz -C toolchains/clang --strip-components=0
 
-        echo "Checking Clang folder..."
-        if [ ! -d toolchains/clang ]; then
-          echo "ERROR: Clang folder not found after extraction!"
-          echo "Directory listing:"
-          ls -al toolchains
-          exit 1
-        fi
+        echo "Toolchain extraction complete:"
+        ls -al toolchains/clang
 
     - name: Export PATH
       run: |
@@ -83,7 +79,7 @@ jobs:
         echo "=== olddefconfig ==="
         make O=$O ARCH=arm64 olddefconfig
 
-        echo "=== Building Image.gz ==="
+        echo "=== Building Kernel Image ==="
         make -j$(nproc) O=$O ARCH=arm64 \
           CC=clang \
           LD=ld.lld \
