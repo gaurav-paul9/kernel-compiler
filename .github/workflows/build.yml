@@ -34,17 +34,25 @@ jobs:
     - name: Download toolchains
       run: |
         mkdir -p toolchains
+
+        echo "Downloading GCC 14.2"
         wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -O toolchains/gcc.tar.xz
+
+        echo "Downloading Clang r450784e"
         wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz -O toolchains/clang.tar.gz
+
+        echo "Extracting toolchains..."
         tar -xf toolchains/gcc.tar.xz -C toolchains/
         tar -xf toolchains/clang.tar.gz -C toolchains/
-        mv toolchains/arm-gnu-toolchain-* toolchains/gcc
-        mv toolchains/clang-* toolchains/clang
 
-    - name: Set environment
+        echo "Renaming directories..."
+        mv toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu toolchains/gcc
+        mv toolchains/clang-r450784e toolchains/clang
+
+    - name: Export PATH
       run: |
-        export PATH=$PWD/toolchains/clang/bin:$PWD/toolchains/gcc/bin:$PATH
-        echo "PATH=$PATH" >> $GITHUB_ENV
+        echo "$PWD/toolchains/clang/bin" >> $GITHUB_PATH
+        echo "$PWD/toolchains/gcc/bin" >> $GITHUB_PATH
 
     - name: Build kernel
       working-directory: kernel/oneplus/sm8550
@@ -52,18 +60,23 @@ jobs:
         export ARCH=arm64
         export SUBARCH=arm64
         export O=out
+
         mkdir -p out
 
+        echo "=== gki_defconfig ==="
         make O=$O ARCH=arm64 gki_defconfig
 
+        echo "=== merge config ==="
         bash scripts/kconfig/merge_config.sh -m \
           out/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
+        echo "=== olddefconfig ==="
         make O=$O ARCH=arm64 olddefconfig
 
+        echo "=== Building Image.gz ==="
         make -j$(nproc) O=$O ARCH=arm64 \
           CC=clang \
           LD=ld.lld \
