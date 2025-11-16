@@ -46,7 +46,6 @@ jobs:
         tar -xf toolchains/gcc.tar.xz -C toolchains/gcc --strip-components=1
 
         echo "Extracting Clang..."
-        # Clang archive extracts directly into current folder → extract into clang directory
         tar -xf toolchains/clang.tar.gz -C toolchains/clang --strip-components=0
 
         echo "Toolchain extraction complete:"
@@ -63,20 +62,24 @@ jobs:
         export ARCH=arm64
         export SUBARCH=arm64
         export O=out
+        export KCONFIG_CONFIG=$O/.config
 
-        mkdir -p out
+        echo "Cleaning source tree..."
+        make mrproper
+
+        mkdir -p $O
 
         echo "=== gki_defconfig ==="
         make O=$O ARCH=arm64 gki_defconfig
 
-        echo "=== merge config ==="
+        echo "=== merge vendor configs ==="
         bash scripts/kconfig/merge_config.sh -m \
-          out/.config \
+          $O/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
-        echo "=== olddefconfig ==="
+        echo "=== Running olddefconfig ==="
         make O=$O ARCH=arm64 olddefconfig
 
         echo "=== Building Kernel Image ==="
