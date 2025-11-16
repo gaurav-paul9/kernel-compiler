@@ -24,8 +24,7 @@ jobs:
           git wget make pkg-config
 
     - name: Create directory structure
-      run: |
-        mkdir -p kernel/oneplus
+      run: mkdir -p kernel/oneplus
 
     - name: Clone kernel source (sm8550)
       run: |
@@ -40,13 +39,13 @@ jobs:
     - name: Add CI config fragment
       run: |
         mkdir -p kernel/oneplus/sm8550/ci_fragments
-        cat > kernel/oneplus/sm8550/ci_fragments/disable_oplus_devinfo.config <<EOF
-# Disable problematic Oplus devinfo modules for CI build
-# CONFIG_OPLUS_FEATURE_DUMP_DEVICE_INFO is not set
-# CONFIG_OPLUS_FEATURE_THEIA is not set
-# CONFIG_OPLUS_FEATURE_FEEDBACK is not set
-# CONFIG_DEBUG_INFO_BTF is not set
-EOF
+        printf "%s\n" \
+          "# Disable problematic Oplus devinfo modules for CI" \
+          "# CONFIG_OPLUS_FEATURE_DUMP_DEVICE_INFO is not set" \
+          "# CONFIG_OPLUS_FEATURE_THEIA is not set" \
+          "# CONFIG_OPLUS_FEATURE_FEEDBACK is not set" \
+          "# CONFIG_DEBUG_INFO_BTF is not set" \
+          > kernel/oneplus/sm8550/ci_fragments/disable_oplus_ci.config
 
     - name: Download AOSP Clang (LLVM 20 - r547379)
       run: |
@@ -55,14 +54,11 @@ EOF
         wget -q "$CLANG_URL" -O toolchains/clang.tar.gz
         tar -xf toolchains/clang.tar.gz -C toolchains/clang
 
-    - name: Verify Clang version
-      run: |
-        export PATH="$PWD/toolchains/clang/bin:$PATH"
-        clang --version
-
     - name: Add Clang to PATH
-      run: |
-        echo "$PWD/toolchains/clang/bin" >> $GITHUB_PATH
+      run: echo "$PWD/toolchains/clang/bin" >> $GITHUB_PATH
+
+    - name: Verify Clang version
+      run: clang --version
 
     - name: Build kernel (LLVM-only)
       working-directory: kernel/oneplus/sm8550
@@ -84,7 +80,7 @@ EOF
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config \
-          ci_fragments/disable_oplus_devinfo.config
+          ci_fragments/disable_oplus_ci.config
 
         echo "=== olddefconfig ==="
         make O=$O ARCH=arm64 olddefconfig
@@ -100,11 +96,10 @@ EOF
           STRIP=llvm-strip \
           KCFLAGS="-Wno-frame-larger-than="
 
-    - name: Show output
-      run: |
-        ls -al kernel/oneplus/sm8550/out/arch/arm64/boot || true
+    - name: Show boot images
+      run: ls -al kernel/oneplus/sm8550/out/arch/arm64/boot || true
 
-    - name: Prepare AnyKernel3 package
+    - name: Prepare AnyKernel3 zip
       run: |
         git clone https://github.com/osm0sis/AnyKernel3.git --depth=1 anykernel
 
