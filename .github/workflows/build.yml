@@ -50,9 +50,13 @@ jobs:
     - name: Download AOSP Clang (LLVM 20 - r547379)
       run: |
         mkdir -p toolchains/clang
-        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/llvm-r547379-release/clang.tar.gz"
-        wget -q "$CLANG_URL" -O toolchains/clang.tar.gz
-        tar -xf toolchains/clang.tar.gz -C toolchains/clang
+        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-src --depth=1
+        cd clang-src
+        git fetch origin refs/tags/llvm-r547379-release --depth=1
+        git checkout FETCH_HEAD
+        git archive HEAD | tar -x -C ../toolchains/clang
+        cd ..
+        rm -rf clang-src
 
     - name: Add Clang to PATH
       run: echo "$PWD/toolchains/clang/bin" >> $GITHUB_PATH
@@ -71,10 +75,8 @@ jobs:
         make mrproper
         mkdir -p $O
 
-        echo "=== gki_defconfig ==="
         make O=$O ARCH=arm64 gki_defconfig
 
-        echo "=== merging vendor configs ==="
         bash scripts/kconfig/merge_config.sh -m \
           $O/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
@@ -82,10 +84,8 @@ jobs:
           arch/arm64/configs/vendor/debugfs.config \
           ci_fragments/disable_oplus_ci.config
 
-        echo "=== olddefconfig ==="
         make O=$O ARCH=arm64 olddefconfig
 
-        echo "=== Building kernel with Clang ==="
         make -j$(nproc) O=$O ARCH=arm64 \
           CC=clang \
           LD=ld.lld \
@@ -95,9 +95,6 @@ jobs:
           OBJDUMP=llvm-objdump \
           STRIP=llvm-strip \
           KCFLAGS="-Wno-frame-larger-than="
-
-    - name: Show boot images
-      run: ls -al kernel/oneplus/sm8550/out/arch/arm64/boot || true
 
     - name: Prepare AnyKernel3 zip
       run: |
