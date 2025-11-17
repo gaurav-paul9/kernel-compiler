@@ -11,10 +11,7 @@ jobs:
     - name: Checkout this repo
       uses: actions/checkout@v4
 
-    # -------------------------------------------------------------
-    # Install dependencies
-    # -------------------------------------------------------------
-    - name: Install build dependencies
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -22,47 +19,38 @@ jobs:
           gcc-arm-linux-gnueabi git kmod libelf-dev libssl-dev libarchive-tools \
           llvm lld python3 python3-pip wget zstd
 
-    # -------------------------------------------------------------
-    # Clone kernel source + modules
-    # -------------------------------------------------------------
-    - name: Clone kernel source + modules
+    - name: Clone kernel sources
       run: |
         mkdir -p kernel/oneplus
         cd kernel/oneplus
 
-        echo "Cloning main kernel repo..."
         git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
           -b lineage-23.0 sm8550 --depth=1
 
-        echo "Cloning sm8550 modules..."
         git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
           -b lineage-23.0 sm8550-modules --depth=1
 
-    # -------------------------------------------------------------
-    # Download Qualcomm Clang prebuilts
-    # -------------------------------------------------------------
     - name: Download QC Clang
       run: |
         mkdir -p qc-prebuilts/clang
         cd qc-prebuilts/clang
 
+        echo "Downloading QC Clang..."
         wget -q \
           https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e51a2f2ab4f8e8b517463c34a7e8bd/clang-host-linux-x86.tar.gz
 
-        echo "Extracting..."
-        tar -xzf clang-host-linux-x86.tar.gz
+        echo "Extracting QC clang..."
+        tar -xf clang-host-linux-x86.tar.gz
 
-        echo "Detect folder name..."
-        EXTRACTED=$(tar -tf clang-host-linux-x86.tar.gz | head -1 | cut -f1 -d"/")
+        echo "Finding extracted folder..."
+        EXTRACTED=$(ls -d */ | head -n1 | sed 's#/##')
 
+        echo "Renaming to clang/"
         mv "$EXTRACTED" clang
 
-        echo "QC Clang installed:"
+        echo "Final Clang Path:"
         ls -al clang/bin
 
-    # -------------------------------------------------------------
-    # Kernel build
-    # -------------------------------------------------------------
     - name: Build kernel
       run: |
         cd kernel/oneplus/sm8550
@@ -73,33 +61,24 @@ jobs:
         export SUBARCH=arm64
         export O=out
 
-        echo "Using compiler:"
         clang --version
 
-        echo "Cleaning tree..."
         make ARCH=arm64 mrproper
 
-        mkdir -p $O
+        mkdir -p out
 
-        echo "Running gki_defconfig..."
         make O=$O ARCH=arm64 gki_defconfig
 
-        echo "Merging vendor configs..."
         bash scripts/kconfig/merge_config.sh -m \
-          $O/.config \
+          out/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
-        echo "Running olddefconfig..."
         make O=$O ARCH=arm64 olddefconfig
 
-        echo "Compiling kernel..."
         make -j$(nproc) O=$O ARCH=arm64 CC=clang
 
-    # -------------------------------------------------------------
-    # Upload kernel output
-    # -------------------------------------------------------------
     - name: Upload Image.gz
       uses: actions/upload-artifact@v4
       with:
