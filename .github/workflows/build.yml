@@ -1,4 +1,4 @@
-name: Build OnePlus 12R Kernel (AlphaDroid Clang)
+name: Build OnePlus 12R Kernel (AlphaDroid Clang r547379)
 
 on:
   workflow_dispatch:
@@ -7,126 +7,188 @@ jobs:
   build:
     name: Build Kernel by ${{ github.actor }}
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      O: out
+      CLANG_DIR: clang-aosp
+      # Change these if you want different branches
+      KERNEL_REPO: https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git
+      KERNEL_BRANCH: lineage-23.0
+      MODULES_REPO: https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git
+      MODULES_BRANCH: lineage-23.0
+      ALPHADROID_CLANG_GIT: https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git
 
     steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    - name: Setup swap (10GB)
-      uses: pierotofy/set-swap-space@master
-      with:
-        swap-size-gb: 10
+      - name: Create workspace folders
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/kernel/oneplus
+          mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+          mkdir -p $GITHUB_WORKSPACE/toolchains
 
-    - name: Install dependencies (Ubuntu 24.04 fixed)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          git dwarves libelf-dev ccache automake flex lzop bison gperf build-essential \
-          zip curl zlib1g-dev libxml2-utils bzip2 libbz2-dev squashfs-tools \
-          pngcrush schedtool dpkg-dev liblz4-tool optipng maven libssl-dev pwgen \
-          bc libx11-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler \
-          python3 python-is-python3
+      - name: Install dependencies (Ubuntu 24.04 compatible)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git dwarves libelf-dev ccache automake flex lzop bison gperf build-essential \
+            zip curl zlib1g-dev libxml2-utils bzip2 libbz2-dev squashfs-tools \
+            pngcrush schedtool dpkg-dev liblz4-tool optipng maven libssl-dev pwgen \
+            bc libx11-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler \
+            python3 python-is-python3
 
-    - name: Create workspace
-      run: mkdir -p kernel_workspace
+      - name: Set swap to 10G (optional but helpful)
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
 
-    - name: Clone Kernel Modules + Devicetree (official OnePlusOSS)
-      run: |
-        cd kernel_workspace
-        git clone https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8550 \
-          -b oneplus/sm8550_u_14.0.0_ace3 kernel_workspace --depth=1
+      - name: Clone your kernel source (sm8550)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/oneplus
+          git clone ${KERNEL_REPO} sm8550 --branch ${KERNEL_BRANCH} --depth=1
 
-    - name: Clone Kernel Source (sm8550 common)
-      run: |
-        cd kernel_workspace/kernel_workspace
-        git clone https://github.com/PoXiao777/android_kernel_oneplus_sm8550 common --depth=1
+      - name: Clone your sm8550-modules (required to resolve symlinks)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/oneplus
+          git clone ${MODULES_REPO} sm8550-modules --branch ${MODULES_BRANCH} --depth=1 || true
 
-    - name: Download AlphaDroid Clang r547379 (AOSP 20.0.0)
-      run: |
-        cd kernel_workspace
-        mkdir clang-aosp
-        git clone https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git clang_tmp --depth=1
-        cp -r clang_tmp/* clang-aosp/
-        rm -rf clang_tmp
+      - name: Verify layout & symlinks (debug)
+        run: |
+          echo "=== kernel/oneplus listing ==="
+          ls -la $GITHUB_WORKSPACE/kernel/oneplus || true
+          echo "=== sm8550 listing (kernel source) ==="
+          ls -la $GITHUB_WORKSPACE/kernel/oneplus/sm8550 || true
+          echo "=== sm8550-modules listing ==="
+          ls -la $GITHUB_WORKSPACE/kernel/oneplus/sm8550-modules || true
+          # check example symlink if present
+          if [ -L "$GITHUB_WORKSPACE/kernel/oneplus/sm8550/kernel/oplus_cpu/thermal" ]; then
+            echo "thermal symlink points to: $(readlink -f $GITHUB_WORKSPACE/kernel/oneplus/sm8550/kernel/oplus_cpu/thermal)"
+          fi
 
-    - name: Build kernel
-      run: |
-        cd kernel_workspace
+      - name: Download / extract AlphaDroid Clang (r547379) into clang-aosp
+        run: |
+          set -e
+          cd $GITHUB_WORKSPACE/kernel_workspace
+          rm -rf ${CLANG_DIR} clang_tmp
+          # shallow clone alphadroid prebuilt clang git (faster than full history)
+          git clone ${ALPHADROID_CLANG_GIT} clang_tmp --depth=1
+          mkdir -p ${CLANG_DIR}
+          # export HEAD to target to ensure we get files (handles dotfiles too)
+          (cd clang_tmp && git archive --format=tar HEAD) | tar -x -C ${CLANG_DIR}
+          # cleanup
+          rm -rf clang_tmp
+          echo "Clang extracted to: $GITHUB_WORKSPACE/kernel_workspace/${CLANG_DIR}"
+          ls -la $GITHUB_WORKSPACE/kernel_workspace/${CLANG_DIR}/bin || true
 
-        KERNEL_DIR=./kernel_workspace/common
-        OUT_DIR=./out
-        THREADS=$(($(nproc --all) - 1))
+      - name: Show clang version (sanity)
+        run: |
+          echo "PATH before: $PATH"
+          echo "${GITHUB_WORKSPACE}/kernel_workspace/${CLANG_DIR}/bin will be used"
+          export PATH=${GITHUB_WORKSPACE}/kernel_workspace/${CLANG_DIR}/bin:$PATH
+          clang --version || true
+          ld.lld --version || true
 
-        # Export Clang (Reference YML #1 style)
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export CC=clang
-        export CXX=clang++
-        export LLVM=1
-        export LLVM_IAS=1
+      - name: Configure defconfigs and merge vendor fragments
+        working-directory: $GITHUB_WORKSPACE/kernel/oneplus/sm8550
+        run: |
+          set -e
+          export O=${GITHUB_WORKSPACE}/kernel_workspace/${O}
+          mkdir -p ${O}
+          # base gki_defconfig
+          make O=${O} ARCH=arm64 gki_defconfig
+          # merge vendor fragments (order matters)
+          bash scripts/kconfig/merge_config.sh -m \
+            ${O}/.config \
+            arch/arm64/configs/vendor/kalama_GKI.config \
+            arch/arm64/configs/vendor/oplus/kalama_GKI.config \
+            arch/arm64/configs/vendor/debugfs.config
+          # apply merged config
+          make O=${O} ARCH=arm64 olddefconfig
 
-        mkdir -p ${OUT_DIR}
-        cd ${KERNEL_DIR}
+      - name: Build kernel (clang + lld)
+        working-directory: $GITHUB_WORKSPACE/kernel/oneplus/sm8550
+        env:
+          PATH: ${{ github.workspace }}/kernel_workspace/${{ env.CLANG_DIR }}/bin:${{ env.PATH }}
+          CLANG_TRIPLE: aarch64-linux-gnu-
+          LLVM: "1"
+          LLVM_IAS: "1"
+        run: |
+          set -e
+          export O=${GITHUB_WORKSPACE}/kernel_workspace/${O}
+          mkdir -p ${O}
+          THREADS=$(nproc || echo 2)
+          # optionally avoid Wframe errors in CI; tune if needed
+          KCFLAGS="-Wno-frame-larger-than="
+          make -j${THREADS} O=${O} ARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=${CLANG_TRIPLE} \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            KCFLAGS="${KCFLAGS}"
 
-        echo "==== APPLYING ONEPLUS 12R DEFCONFIG CHAIN ===="
+      - name: Install modules
+        working-directory: $GITHUB_WORKSPACE/kernel/oneplus/sm8550
+        run: |
+          set -e
+          export O=${GITHUB_WORKSPACE}/kernel_workspace/${O}
+          THREADS=$(nproc || echo 2)
+          make -j${THREADS} O=${O} INSTALL_MOD_PATH=modules_install INSTALL_MOD_STRIP=1 modules_install || true
+          # remove broken symlinks if any
+          find modules_install -type l -delete || true
 
-        make O=${OUT_DIR} gki_defconfig
-        bash scripts/kconfig/merge_config.sh -m \
-          ${OUT_DIR}/.config \
-          arch/arm64/configs/vendor/kalama_GKI.config \
-          arch/arm64/configs/vendor/oplus/kalama_GKI.config \
-          arch/arm64/configs/vendor/debugfs.config
+      - name: Prepare AnyKernel3 and package ZIP
+        working-directory: $GITHUB_WORKSPACE/kernel/oneplus/sm8550
+        run: |
+          set -e
+          rm -rf anykernel
+          git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1 anykernel
+          rm -rf anykernel/.git
+          # prefer Image.gz-dtb if available
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp out/arch/arm64/boot/Image.gz-dtb anykernel/Image.gz-dtb
+          elif [ -f out/arch/arm64/boot/Image ]; then
+            cp out/arch/arm64/boot/Image anykernel/Image
+          else
+            echo "No Image found in out/arch/arm64/boot. Build may have failed."
+            ls -la out/arch/arm64/boot || true
+            exit 1
+          fi
+          # copy dtbo if present
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
+            cp out/arch/arm64/boot/dtbo.img anykernel/dtbo.img
+          fi
+          # copy modules
+          mkdir -p anykernel/modules
+          if [ -d out/modules_install/lib/modules ]; then
+            cp -r out/modules_install/lib/modules/* anykernel/modules/ || true
+          fi
+          ZIPNAME="OnePlus12R-Kernel-$(date +%Y%m%d-%H%M).zip"
+          (cd anykernel && zip -r9 "../${ZIPNAME}" ./*)
+          echo "Created: ${ZIPNAME}"
+          ls -lh ../${ZIPNAME} || true
 
-        make O=${OUT_DIR} olddefconfig
+      - name: Upload AnyKernel3 ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneplus12r-anykernel-zip
+          path: $GITHUB_WORKSPACE/kernel/oneplus/sm8550/OnePlus12R-Kernel-*.zip
 
-        echo "==== START KERNEL BUILD ===="
-        make -j"$THREADS" O=${OUT_DIR}
+      - name: Upload kernel image & dtbo (raw)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-images
+          path: |
+            $GITHUB_WORKSPACE/kernel/oneplus/sm8550/out/arch/arm64/boot/Image
+            $GITHUB_WORKSPACE/kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz-dtb
+            $GITHUB_WORKSPACE/kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img
 
-        echo "==== INSTALL MODULES ===="
-        make -j"$THREADS" O=${OUT_DIR} INSTALL_MOD_PATH="./modules_install" INSTALL_MOD_STRIP=1 modules_install
-        find ./modules_install -type l -delete || true
-
-    - name: Build AnyKernel3
-      run: |
-        cd kernel_workspace
-        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1 AnyKernel3
-        rm -rf AnyKernel3/.git
-
-        # Copy kernel image
-        if [ -f out/arch/arm64/boot/Image ]; then
-          cp out/arch/arm64/boot/Image AnyKernel3/
-        fi
-
-        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-        fi
-
-        # Copy dtbo
-        if [ -f out/arch/arm64/boot/dtbo.img ]; then
-          cp out/arch/arm64/boot/dtbo.img AnyKernel3/
-        fi
-
-        # Copy modules
-        mkdir -p AnyKernel3/modules
-        cp -r out/modules_install/lib/modules/* AnyKernel3/modules/ || true
-
-    - name: Upload Kernel Image
-      uses: actions/upload-artifact@v4
-      with:
-        name: Kernel-Image
-        path: |
-          kernel_workspace/out/arch/arm64/boot/Image
-          kernel_workspace/out/arch/arm64/boot/Image.gz-dtb
-          kernel_workspace/out/arch/arm64/boot/dtbo.img
-
-    - name: Upload Modules
-      uses: actions/upload-artifact@v4
-      with:
-        name: Kernel-Modules
-        path: kernel_workspace/out/modules_install/lib/modules/*
-
-    - name: Upload AnyKernel3 Flashable ZIP
-      uses: actions/upload-artifact@v4
-      with:
-        name: AnyKernel3-OnePlus12R
-        path: kernel_workspace/AnyKernel3/*
+      - name: Upload modules (raw)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-modules
+          path: $GITHUB_WORKSPACE/kernel/oneplus/sm8550/out/modules_install/lib/modules/*
