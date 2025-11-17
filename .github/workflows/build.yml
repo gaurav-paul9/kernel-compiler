@@ -1,12 +1,17 @@
-name: Build OnePlus 12R Kernel (Qualcomm Clang, Clean Build)
+name: Build OnePlus 12R Kernel (Qualcomm Clang)
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 300
 
     steps:
     - name: Checkout workflow repo
@@ -24,92 +29,95 @@ jobs:
           gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
           gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
 
-    - name: Prepare directories
+    - name: Create working directories
       run: |
         mkdir -p qc-prebuilts
         mkdir -p kernel/oneplus
 
-    - name: Clone Qualcomm Clang (prebuilts) and kernel build-tools
+    - name: Clone Qualcomm prebuilts (Clang + kernel build-tools)
       run: |
+        # Clone the public CodeLinaro / Qualcomm prebuilts used by the manifest
         git clone --depth=1 https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86 qc-prebuilts/clang || true
         git clone --depth=1 https://git.codelinaro.org/clo/la/kernel/prebuilts/build-tools qc-prebuilts/kernel-build-tools || true
-        echo "Cloned qc prebuilts; top-level listing:"
-        ls -al qc-prebuilts | sed -n '1,200p'
+        echo "QC prebuilts top-level:"
+        ls -la qc-prebuilts | sed -n '1,200p'
 
-    - name: Detect and add clang to PATH
+    - name: Detect clang binary and add to PATH
       id: detect_clang
       run: |
+        # find a clang binary inside the cloned QC prebuilts
         CLANG_BIN=$(find qc-prebuilts/clang -type f -name clang -perm /111 2>/dev/null | head -n1 || true)
         if [ -z "$CLANG_BIN" ]; then
-          echo "No clang binary found under qc-prebuilts/clang; dumping tree for debug"
-          find qc-prebuilts/clang -maxdepth 4 -type d -print || true
-          echo "::error::Could not find clang binary in qc-prebuilts/clang"
+          echo "ERROR: cannot find clang binary under qc-prebuilts/clang"
+          echo "Dumping tree for debug:"
+          find qc-prebuilts/clang -maxdepth 4 -type f -printf '%p\n' || true
           exit 1
         fi
         CLANG_DIR=$(dirname "$CLANG_BIN")
-        echo "Found clang at: $CLANG_BIN"
+        echo "Found clang binary: $CLANG_BIN"
         echo "clang_dir=$CLANG_DIR" >> $GITHUB_OUTPUT
+        # expose clang and build-tools to subsequent steps
         echo "$CLANG_DIR" >> $GITHUB_PATH
         if [ -d qc-prebuilts/kernel-build-tools/bin ]; then
           echo "$PWD/qc-prebuilts/kernel-build-tools/bin" >> $GITHUB_PATH
         fi
 
-    - name: Verify clang
+    - name: Verify clang version (should be Qualcomm Clang)
       run: |
-        clang --version | sed -n '1,4p'
+        echo "clang resolved to: $(which clang || true)"
+        clang --version | sed -n '1,4p' || true
 
-    - name: Clone kernel source and modules (into required structure)
+    - name: Clone kernel source and sm8550-modules
       run: |
-        mkdir -p kernel/oneplus
-        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git -b lineage-23.0 kernel/oneplus/sm8550 --depth=1
-        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
-        echo "Kernel and modules cloned; listing kernel/oneplus:"
+        # Kernel repo + modules (as confirmed)
+        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
+          -b lineage-23.0 kernel/oneplus/sm8550 --depth=1
+        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
+          -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
+        echo "kernel/oneplus content:"
         ls -la kernel/oneplus | sed -n '1,200p'
 
-    - name: Ensure clean kernel source (reset / clean / mrproper)
+    - name: Create CI fragment and fix symlink (BEFORE cleaning)
       working-directory: kernel/oneplus/sm8550
       run: |
-        # NOTE: these commands remove uncommitted changes and generated files.
-        # This is required for repeatable CI builds.
-        git reset --hard
-        git clean -fdx
-        # make mrproper removes generated files from previous kernel builds
-        make ARCH=arm64 mrproper || true
-        # ensure out dir removed
-        rm -rf out || true
-        echo "Source cleaned"
-
-    - name: Fix symlinks (thermal -> sm8550-modules path)
-      working-directory: kernel/oneplus/sm8550
-      run: |
-        TARGET="../../../sm8550-modules/oplus/kernel/cpu/thermal"
-        rm -f kernel/oplus_cpu/thermal || true
+        # ensure OPlus thermal symlink will point to the modules tree (matches manifest)
         mkdir -p kernel/oplus_cpu || true
-        ln -s "$TARGET" kernel/oplus_cpu/thermal || true
+        rm -f kernel/oplus_cpu/thermal || true
+        ln -s ../../../sm8550-modules/oplus/kernel/cpu/thermal kernel/oplus_cpu/thermal || true
+        echo "Symlink created:"
         ls -l kernel/oplus_cpu || true
 
-    - name: Add CI config fragment (safe overrides)
-      working-directory: kernel/oneplus/sm8550
-      run: |
+        # Create a small CI config fragment to avoid known CI-only build issues
         mkdir -p ci_fragments
         printf "%s\n" \
-          "# CI-only overrides: prevent some Oplus drivers from being built into vmlinux" \
+          "# CI overrides - disable features that require extra vendor infra in CI" \
           "# CONFIG_OPLUS_FEATURE_DUMP_DEVICE_INFO is not set" \
           "# CONFIG_OPLUS_FEATURE_THEIA is not set" \
           "# CONFIG_OPLUS_FEATURE_FEEDBACK is not set" \
           "# CONFIG_DEBUG_INFO_BTF is not set" \
           > ci_fragments/disable_oplus_ci.config
-        cat ci_fragments/disable_oplus_ci.config
+        echo "CI fragment:"
+        sed -n '1,120p' ci_fragments/disable_oplus_ci.config
 
-    - name: Create base config and merge vendor configs (clean out dir)
+    - name: Final clean of kernel source (required to avoid dirty-tree error)
+      working-directory: kernel/oneplus/sm8550
+      run: |
+        # NOTE: these commands remove uncommitted changes and generated files.
+        # Required for repeatable CI builds
+        git reset --hard
+        git clean -fdx
+        make ARCH=arm64 mrproper || true
+        rm -rf out || true
+        echo "Source cleaned"
+
+    - name: Create base config and merge vendor configs
       working-directory: kernel/oneplus/sm8550
       run: |
         export O=out
-        rm -rf $O || true
         mkdir -p $O
-        # create base gki config
+        # create gki base config
         make O=$O ARCH=arm64 gki_defconfig
-        # merge vendor fragments + CI fragment last
+        # merge vendor fragments and CI fragment (CI fragment last)
         bash scripts/kconfig/merge_config.sh -m \
           $O/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
@@ -119,15 +127,16 @@ jobs:
         # resolve merged config
         make O=$O ARCH=arm64 olddefconfig
 
-    - name: Build kernel + modules (Qualcomm clang, LLVM pipeline)
+    - name: Build kernel and modules with QC clang
       working-directory: kernel/oneplus/sm8550
       env:
         ARCH: arm64
         O: out
       run: |
-        # ensure clang dir is available from detect step
-        CLANG_DIR=${{ steps.detect_clang.outputs.clang_dir }}
+        # Use the detected clang_dir from previous step
+        CLANG_DIR="${{ steps.detect_clang.outputs.clang_dir }}"
         export PATH="$CLANG_DIR:$GITHUB_WORKSPACE/qc-prebuilts/kernel-build-tools/bin:$PATH"
+
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         export CLANG_TRIPLE=aarch64-linux-gnu-
@@ -140,21 +149,21 @@ jobs:
         export OBJDUMP=llvm-objdump
         export STRIP=llvm-strip
 
-        # allow larger frame-size warnings to not fail CI
+        # Prevent strict frame-size errors from failing CI
         KCFLAGS="-Wno-frame-larger-than="
 
-        # build vmlinux / Image (adjust -j if runner low memory)
+        # build vmlinux / Image
         make -j$(nproc) O=$O ARCH=arm64 \
           CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm \
           OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
           KCFLAGS="$KCFLAGS"
 
-        # install modules into temp dir for packaging
-        rm -rf modules_tmp
+        # install modules into temporary install tree for packaging
+        rm -rf modules_tmp || true
         mkdir -p modules_tmp
         make O=$O ARCH=arm64 modules_install INSTALL_MOD_PATH=$PWD/modules_tmp
 
-    - name: Package AnyKernel3 (image + modules)
+    - name: Package AnyKernel3 flashable ZIP (image + modules)
       run: |
         rm -rf AnyKernel || true
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel
@@ -166,14 +175,19 @@ jobs:
         elif [ -f kernel/oneplus/sm8550/out/arch/arm64/boot/vmlinuz ]; then
           IMG=kernel/oneplus/sm8550/out/arch/arm64/boot/vmlinuz
         fi
+
         if [ -n "$IMG" ]; then
           cp "$IMG" AnyKernel/ || true
+        else
+          echo "::warning::Kernel image not found; packaging may not include kernel image"
         fi
 
+        # copy dtbo if present
         if [ -f kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img ]; then
           cp kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img AnyKernel/ || true
         fi
 
+        # copy modules
         mkdir -p AnyKernel/modules
         if [ -d kernel/oneplus/sm8550/modules_tmp/lib/modules ]; then
           cp -r kernel/oneplus/sm8550/modules_tmp/lib/modules/* AnyKernel/modules/ || true
@@ -183,7 +197,11 @@ jobs:
         zip -r9 "../OnePlus12R-Kernel-$(date -u +%Y%m%dT%H%M%SZ).zip" ./* -x .git README.md || true
         cd ..
 
-    - name: Upload flashable zip artifact
+    - name: List produced ZIP
+      run: |
+        ls -lah OnePlus12R-Kernel-*.zip || true
+
+    - name: Upload flashable ZIP artifact
       uses: actions/upload-artifact@v4
       with:
         name: OnePlus12R-Kernel
