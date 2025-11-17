@@ -37,34 +37,32 @@ jobs:
 
         echo "Downloading QC Clang..."
         wget -q \
-          https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e51a2f2ab4f8e8b517463c34a7e8bd/clang-host-linux-x86.tar.gz
+         https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e51a2f2ab4f8e8b517463c34a7e8bd/clang-host-linux-x86.tar.gz
 
-        echo "Extracting QC clang..."
+        echo "Extracting QC Clang..."
         tar -xf clang-host-linux-x86.tar.gz
 
-        echo "Finding extracted folder..."
-        EXTRACTED=$(ls -d */ | head -n1 | sed 's#/##')
+        echo "Clang extracted:"
+        ls -al .
 
-        echo "Renaming to clang/"
-        mv "$EXTRACTED" clang
+        echo "Clang bin directory:"
+        ls -al bin
 
-        echo "Final Clang Path:"
-        ls -al clang/bin
+        cd $GITHUB_WORKSPACE
 
     - name: Build kernel
       run: |
         cd kernel/oneplus/sm8550
 
-        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang/clang
+        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang
         export PATH=$CLANG_PATH/bin:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
         export O=out
 
-        clang --version
+        clang --version || true
 
         make ARCH=arm64 mrproper
-
         mkdir -p out
 
         make O=$O ARCH=arm64 gki_defconfig
