@@ -33,10 +33,10 @@ jobs:
           python3 python-is-python3 unzip xz-utils zip zlib1g-dev \
           libelf-dev dwarves
 
-    - name: Create 32GB Swap
+    - name: Create 8GB Swap (Safe Limit)
       run: |
         sudo swapoff -a || true
-        sudo fallocate -l 32G /swapfile
+        sudo fallocate -l 8G /swapfile
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
