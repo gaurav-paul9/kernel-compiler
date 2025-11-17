@@ -1,84 +1,127 @@
-name: Build OnePlus 12R Kernel
+name: Build Kernel
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout this repo
+    - name: Checkout
       uses: actions/checkout@v4
 
     - name: Install dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu \
-          gcc-arm-linux-gnueabi git kmod libelf-dev libssl-dev libarchive-tools \
-          llvm lld python3 python3-pip wget zstd
+        sudo apt update
+        sudo apt install -y bc bison flex build-essential zip unzip git wget tar \
+          python3 python-is-python3 libelf-dev libssl-dev rsync kmod cpio
 
-    - name: Clone kernel sources
-      run: |
-        mkdir -p kernel/oneplus
-        cd kernel/oneplus
-
-        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
-          -b lineage-23.0 sm8550 --depth=1
-
-        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
-          -b lineage-23.0 sm8550-modules --depth=1
-
-    - name: Download QC Clang
+    # --------------------------------------------------------
+    # Download QC Clang (OnePlus / CodeLinaro prebuilts)
+    # --------------------------------------------------------
+    - name: Download QC Clang (OnePlus prebuilts)
       run: |
         mkdir -p qc-prebuilts/clang
         cd qc-prebuilts/clang
-
+        
         echo "Downloading QC Clang..."
         wget -q \
-         https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e51a2f2ab4f8e8b517463c34a7e8bd/clang-host-linux-x86.tar.gz
+          https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e51a2f2ab4f8e8b517463c34a7e8bd/clang-host-linux-x86.tar.gz
 
         echo "Extracting QC Clang..."
         tar -xf clang-host-linux-x86.tar.gz
 
-        echo "Clang extracted:"
-        ls -al .
+        # Auto-detect extracted folder (linux-x86-<HASH>)
+        EXTRACTED=$(find . -maxdepth 1 -type d -name "linux-x86-*")
+        echo "Detected extracted folder: $EXTRACTED"
+
+        # Rename it to clang/
+        mv "$EXTRACTED" clang
+
+        echo "Final Clang Folder:"
+        ls -al clang
 
         echo "Clang bin directory:"
-        ls -al bin
+        ls -al clang/bin
 
         cd $GITHUB_WORKSPACE
 
+    # --------------------------------------------------------
+    # Clone kernel sources in correct directory layout
+    # --------------------------------------------------------
+    - name: Clone OnePlus SM8550 kernel & modules
+      run: |
+        mkdir -p kernel/oneplus
+        cd kernel/oneplus
+
+        echo "Cloning common kernel..."
+        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
+          -b lineage-23.0 sm8550 --depth=1
+
+        echo "Cloning sm8550-modules..."
+        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
+          -b lineage-23.0 sm8550-modules --depth=1
+
+        echo "Directory structure:"
+        ls -al .
+
+    # --------------------------------------------------------
+    # Build kernel
+    # --------------------------------------------------------
     - name: Build kernel
       run: |
-        cd kernel/oneplus/sm8550
-
-        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang
+        export KERNEL_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550
+        export MODULES_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550-modules
+        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang/clang
         export PATH=$CLANG_PATH/bin:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
-        export O=out
+        export O=$KERNEL_DIR/out
 
+        cd $KERNEL_DIR
+
+        echo "Cleaning source tree..."
+        make ARCH=arm64 mrproper || true
+
+        mkdir -p $O
+
+        echo "Using Clang:"
         clang --version || true
 
-        make ARCH=arm64 mrproper
-        mkdir -p out
-
+        echo "Running gki_defconfig..."
         make O=$O ARCH=arm64 gki_defconfig
 
+        echo "Merging vendor configs..."
         bash scripts/kconfig/merge_config.sh -m \
-          out/.config \
+          $O/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
+        echo "Finalizing config..."
         make O=$O ARCH=arm64 olddefconfig
 
-        make -j$(nproc) O=$O ARCH=arm64 CC=clang
+        echo "Building Image..."
+        make -j$(nproc) O=$O ARCH=arm64 \
+          CC=clang \
+          HOSTCC=clang \
+          HOSTCXX=clang++ \
+          LD=ld.lld
 
-    - name: Upload Image.gz
+        echo "Build finished, checking output..."
+        ls -al $O/arch/arm64/boot
+
+    # --------------------------------------------------------
+    # Upload Image.gz + dtb artifacts
+    # --------------------------------------------------------
+    - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: Image.gz
-        path: kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz
+        name: kernel-output
+        path: |
+          kernel/oneplus/sm8550/out/arch/arm64/boot/Image
+          kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz
+          kernel/oneplus/sm8550/out/arch/arm64/boot/Image.lz4
+          kernel/oneplus/sm8550/out/arch/arm64/boot/dtb
+          kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img
