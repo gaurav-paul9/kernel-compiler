@@ -1,104 +1,110 @@
-name: Build OnePlus 12R Kernel
+name: Build OnePlus 12R Kernel (GKI)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
+    name: Build Kernel by ${{ github.actor }}
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v3
+    - name: Checkout this repo
+      uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Prepare environment
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          git curl wget rsync bc bison flex build-essential \
-          libssl-dev libelf-dev dwarves python3 ccache
+          git curl xz-utils lz4 libelf-dev build-essential bc flex bison \
+          dwarves python3 device-tree-compiler ccache
 
-    - name: Create directory tree (Your exact structure)
+    - name: Create workspace
       run: |
         mkdir -p kernel/oneplus
-        cd kernel/oneplus
-
-        echo "Cloning kernel source..."
-        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
-          sm8550 --branch lineage-23.0 --depth=1
-
-        echo "Cloning kernel modules..."
-        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
-          sm8550-modules --branch lineage-23.0 --depth=1
-
-        echo "DIR TREE CREATED:"
-        ls -R .
-
-    - name: Download & extract AlphaDroid Clang r547379
-      run: |
         mkdir -p toolchains
+
+    - name: Clone kernel source
+      run: |
+        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550 \
+          kernel/oneplus/sm8550 --depth=1
+
+    - name: Clone kernel modules
+      run: |
+        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules \
+          kernel/oneplus/sm8550-modules --depth=1
+
+    - name: Clone Alphadroid Clang r547379
+      run: |
         cd toolchains
+        git clone https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git clang --depth=1
+        cd ..
 
-        echo "Cloning clang..."
-        git clone https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git clang
-
-        echo "Clang structure:"
-        ls -R clang
-
-    - name: Export environment variables
+    - name: Setup Clang
       run: |
-        echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550" >> $GITHUB_ENV
-        echo "MODULES_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550-modules" >> $GITHUB_ENV
-        echo "CLANG_DIR=$GITHUB_WORKSPACE/toolchains/clang" >> $GITHUB_ENV
-        echo "OUT_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550/out" >> $GITHUB_ENV
+        export PATH=$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH
+        echo "PATH=$PATH" >> $GITHUB_ENV
 
-    - name: Build kernel
+    - name: Configure Kernel (mrproper + defconfigs)
       run: |
-        cd $KERNEL_DIR
+        KERNEL=kernel/oneplus/sm8550
+        OUT=$KERNEL/out
 
-        mkdir -p $OUT_DIR
+        cd $KERNEL
 
-        export PATH=$CLANG_DIR/bin:$PATH
-        export LD_LIBRARY_PATH=$CLANG_DIR/lib64
+        # Full clean – fixes "source tree is not clean"
+        make mrproper
+
+        mkdir -p $OUT
+
+        export ARCH=arm64
+        export SUBARCH=arm64
         export CC=clang
         export CXX=clang++
         export LLVM=1
         export LLVM_IAS=1
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-        echo "=== RUNNING DEFCONFIG ==="
-        make O=$OUT_DIR gki_defconfig
+        echo "Using GKI defconfig + vendor configs"
 
-        echo "=== MERGING VENDOR CONFIGS ==="
+        make O=$OUT gki_defconfig
+
         bash scripts/kconfig/merge_config.sh -m \
-          $OUT_DIR/.config \
+          $OUT/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
-        echo "=== FINALIZING CONFIG ==="
-        make O=$OUT_DIR olddefconfig
+        make O=$OUT olddefconfig
 
-        echo "=== BUILDING KERNEL ==="
-        make -j$(nproc) O=$OUT_DIR
-
-    - name: Package AnyKernel3
+    - name: Build kernel
       run: |
-        cd $GITHUB_WORKSPACE
-        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1 AK3
+        KERNEL=kernel/oneplus/sm8550
+        OUT=$KERNEL/out
+        THREADS=$(nproc --all)
 
-        cp $OUT_DIR/arch/arm64/boot/Image AK3/ || true
-        cp $OUT_DIR/arch/arm64/boot/Image.gz-dtb AK3/ || true
-        cp $OUT_DIR/arch/arm64/boot/dtbo.img AK3/ || true
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CC=clang
+        export CXX=clang++
+        export LLVM=1
+        export LLVM_IAS=1
+        export PATH=$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH
 
-    - name: Upload artifacts
+        cd $KERNEL
+
+        make -j$THREADS O=$OUT
+
+    - name: Prepare AnyKernel3 package
+      run: |
+        cd kernel
+        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1
+
+        # Copy kernel image(s)
+        cp oneplus/sm8550/out/arch/arm64/boot/Image* AnyKernel3/ || true
+        cp oneplus/sm8550/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
+
+    - name: Upload Flashable Kernel
       uses: actions/upload-artifact@v4
       with:
-        name: OP12R-Kernel
-        path: |
-          kernel/oneplus/sm8550/out/arch/arm64/boot/Image*
-          kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img
-          AK3/*
+        name: OnePlus12R-GKI-Kernel
+        path: kernel/AnyKernel3/*
