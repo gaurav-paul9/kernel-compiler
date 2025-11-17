@@ -13,6 +13,10 @@ jobs:
       with:
         fetch-depth: 0
 
+    ###########################################################################
+    #                            CLONE KERNEL SOURCES                         #
+    ###########################################################################
+
     - name: Clone Main Kernel Source
       run: |
         mkdir -p kernel/oneplus
@@ -24,6 +28,10 @@ jobs:
         git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
           -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
 
+    ###########################################################################
+    #                              SYSTEM SETUP                               #
+    ###########################################################################
+
     - name: Install Dependencies
       run: |
         sudo apt-get update
@@ -33,7 +41,7 @@ jobs:
           python3 python-is-python3 unzip xz-utils zip zlib1g-dev \
           libelf-dev dwarves
 
-    - name: Create 8GB Swap (Safe Limit)
+    - name: Create 8GB Swap
       run: |
         sudo swapoff -a || true
         sudo fallocate -l 8G /swapfile
@@ -58,14 +66,14 @@ jobs:
       run: mkdir -p out
 
     ###########################################################################
-    #                >>> USING ALL DEFCONFIGS YOU PROVIDED <<<               #
+    #                         CONFIG GENERATION (4 FILES)                     #
     ###########################################################################
 
     - name: Generate gki_defconfig (Base)
       run: |
         make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out gki_defconfig
 
-    - name: Merge kalama + oplus + debugfs configs
+    - name: Merge vendor + oplus + debugfs configs
       run: |
         cd kernel/oneplus/sm8550
         scripts/kconfig/merge_config.sh \
@@ -73,6 +81,13 @@ jobs:
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
+
+    - name: Cleanup merge_config temporary files
+      run: |
+        cd kernel/oneplus/sm8550
+        rm -f .config
+        rm -rf include/config include/generated
+        rm -f scripts/kconfig/.tmp*
         cd $GITHUB_WORKSPACE
 
     - name: Finalize Config (olddefconfig)
@@ -80,16 +95,22 @@ jobs:
         make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out olddefconfig
 
     ###########################################################################
+    #                             KERNEL BUILD                                 #
+    ###########################################################################
 
     - name: Build Kernel
       run: |
         make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out -j$(nproc)
 
+    ###########################################################################
+    #                              PACKAGE OUTPUT                             #
+    ###########################################################################
+
     - name: Package Kernel
       run: |
         cd out/arch/arm64/boot
         zip -r9 $GITHUB_WORKSPACE/kernel.zip \
-          Image Image.gz* dtb* dtbo* || true
+          Image Image.gz* dtb* dtbo* 2>/dev/null || true
         cd $GITHUB_WORKSPACE
 
     - name: Upload Kernel Artifact
