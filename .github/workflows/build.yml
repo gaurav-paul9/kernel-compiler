@@ -1,4 +1,5 @@
-name: Build OnePlus 12R A14 Kernel
+name: Build OnePlus 12R Kernel (Clang r547379)
+
 on:
   workflow_dispatch:
 
@@ -6,10 +7,6 @@ jobs:
   build:
     name: Build Kernel by ${{ github.actor }}
     runs-on: ubuntu-latest
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
 
     steps:
 
@@ -20,117 +17,113 @@ jobs:
 
     - name: Setup build environment
       run: |
-        echo "BUILD_TIME=$(TZ=Asia/Shanghai date '+%y%m%d')" >> $GITHUB_ENV
         sudo apt-get update
         sudo apt-get install -y \
           git dwarves libelf-dev ccache automake flex lzop bison gperf build-essential \
           zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev squashfs-tools \
-          pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen \
-          libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl \
+          pngcrush schedtool dpkg-dev liblz4-tool optipng maven libssl-dev pwgen \
           bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev \
-          xsltproc unzip device-tree-compiler python2 python3
+          unzip device-tree-compiler python3 python-is-python3
 
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: Download kernel source & devicetree
+    - name: Clone kernel source + modules
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
 
-        # Devicetree + kernel modules repo (OnePlus official)
+        # Clone modules + devicetree
         git clone https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8550 \
           -b oneplus/sm8550_u_14.0.0_ace3 kernel_workspace --depth=1
 
-        cd kernel_workspace
+        cd kernel_workspace/kernel_platform
 
-        # Kernel platform folder already present in dt repo
-        cd kernel_platform
+        # Clone kernel source (sm8550)
+        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550 \
+          -b lineage-23.0 common --depth=1
 
-        # Kernel source repo
-        git clone https://github.com/PoXiao777/android_kernel_oneplus_sm8550 common --depth=1
-
-    - name: Download Clang 20.0.0 (correct for OnePlus 12R)
+    - name: Download AlphaDroid Clang r547379
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir clang-aosp
-        # Clang 20.0.0 – revision r547379 (matches your device exactly)
-        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2025/clang-r547379.tar.gz -O clang.tar.gz
-        tar -xf clang.tar.gz -C clang-aosp/
+
+        git clone https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git \
+          clang-temp --depth=1
+
+        # Move to expected folder structure
+        mv clang-temp/* clang-aosp/
+        rm -rf clang-temp
 
     - name: Build kernel
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
 
-        KERNEL_DIR=./kernel_platform/common
-        OUT_DIR=$GITHUB_WORKSPACE/kernel_workspace/out
+        KDIR=./kernel_workspace/kernel_platform/common
+        OUT=./out
         THREADS=$(($(nproc --all) - 1))
 
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
-        export CLANG_TRIPLE=aarch64-linux-gnu-
         export CC=clang
         export CXX=clang++
         export LLVM=1
         export LLVM_IAS=1
+        export CLANG_TRIPLE=aarch64-linux-gnu-
 
-        mkdir -p ${OUT_DIR}
-        cd ${KERNEL_DIR}
+        mkdir -p $OUT
+        cd $KDIR
 
-        echo "==== APPLYING ONEPLUS 12R DEFCONFIG CHAIN ===="
+        echo "==== APPLYING DEFCONFIGS FOR 12R ===="
 
-        make O=${OUT_DIR} gki_defconfig
-        make O=${OUT_DIR} vendor/kalama_GKI.config
-        make O=${OUT_DIR} vendor/oplus/kalama_GKI.config
-        make O=${OUT_DIR} vendor/debugfs.config
+        make O=$OUT gki_defconfig
 
-        # Apply LTO optimization settings
-        scripts/config --file ${OUT_DIR}/.config \
-          -e LTO_CLANG -d LTO_NONE -e LTO_CLANG_THIN \
-          -d LTO_CLANG_FULL -e THINLTO || true
+        # Merge Oplus + Kalama configs
+        bash scripts/kconfig/merge_config.sh -m \
+          $OUT/.config \
+          arch/arm64/configs/vendor/kalama_GKI.config \
+          arch/arm64/configs/vendor/oplus/kalama_GKI.config \
+          arch/arm64/configs/vendor/debugfs.config
 
-        make -j"$THREADS" O=${OUT_DIR}
-        make -j"$THREADS" O=${OUT_DIR} INSTALL_MOD_PATH="./modules_install" INSTALL_MOD_STRIP=1 modules_install
+        make O=$OUT olddefconfig
 
-        find ./modules_install -type l -delete || true
+        echo "==== BUILDING KERNEL ===="
+        make -j"$THREADS" O=$OUT
 
-    - name: Make Anykernel3
+        echo "==== INSTALLING MODULES ===="
+        make -j"$THREADS" O=$OUT INSTALL_MOD_PATH=modules_install modules_install
+        find modules_install -type l -delete
+
+    - name: Prepare AnyKernel3
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1 AnyKernel3
 
-        # Copy image
-        if [ -f out/arch/arm64/boot/Image ]; then
-          cp out/arch/arm64/boot/Image AnyKernel3/
-        elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1 AnyKernel3
+        rm -rf AnyKernel3/.git
+
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
           cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        elif [ -f out/arch/arm64/boot/Image ]; then
+          cp out/arch/arm64/boot/Image AnyKernel3/
         fi
 
-        # Copy dtbo
         if [ -f out/arch/arm64/boot/dtbo.img ]; then
           cp out/arch/arm64/boot/dtbo.img AnyKernel3/
         fi
 
-        # Copy modules
         mkdir -p AnyKernel3/modules
         cp -r out/modules_install/lib/modules/* AnyKernel3/modules/ || true
 
-    - name: Upload Image
+    - name: Upload Kernel Image
       uses: actions/upload-artifact@v4
       with:
-        name: Image
+        name: Kernel-Image
         path: |
           kernel_workspace/out/arch/arm64/boot/Image
           kernel_workspace/out/arch/arm64/boot/Image.gz-dtb
           kernel_workspace/out/arch/arm64/boot/dtbo.img
 
-    - name: Upload Modules
+    - name: Upload AnyKernel3 ZIP
       uses: actions/upload-artifact@v4
       with:
-        name: Kmd-${{ env.BUILD_TIME }}
-        path: kernel_workspace/out/modules_install/lib/modules/*
-
-    - name: Upload AnyKernel3
-      uses: actions/upload-artifact@v4
-      with:
-        name: AK3-OP12R-A14-${{ env.BUILD_TIME }}
+        name: AK3-12R-Clang547379
         path: kernel_workspace/AnyKernel3/*
