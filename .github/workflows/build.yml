@@ -1,4 +1,4 @@
-name: Kernel Build
+name: Build OnePlus 12R Kernel
 
 on:
   workflow_dispatch:
@@ -8,102 +8,101 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
+    - name: Checkout this repo
       uses: actions/checkout@v3
 
-    - name: Install required packages
+    ## ============================================================
+    ## 1) Install Dependencies
+    ## ============================================================
+    - name: Install build dependencies
       run: |
-        sudo apt update
-        sudo apt install -y bc bison flex build-essential ccache curl git \
-          libssl-dev libelf-dev dwarves python3 python3-pip unzip
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu \
+          gcc-arm-linux-gnueabi git kmod libelf-dev libssl-dev libarchive-tools \
+          llvm lld python3 python3-pip wget zstd
 
-    - name: Prepare workspace
+    ## ============================================================
+    ## 2) Clone Kernel Sources
+    ## ============================================================
+    - name: Clone kernel sources
       run: |
         mkdir -p kernel/oneplus
-        mkdir -p qc-prebuilts/clang
-        mkdir -p toolchains
-
-    - name: Clone OnePlus 12R kernel tree
-      run: |
+        cd kernel/oneplus
         git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
-          -b lineage-23.0 kernel/oneplus/sm8550 --depth=1
+          -b lineage-23.0 sm8550 --depth=1
 
-    - name: Clone OnePlus sm8550-modules (oplus extras)
-      run: |
+        # Clone modules tree (needed for symlink)
         git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
-          -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
+          -b lineage-23.0 sm8550-modules --depth=1
 
-    - name: Fix symlink structure
+    ## ============================================================
+    ## 3) Download Qualcomm Clang (Correctly)
+    ## ============================================================
+    - name: Download Qualcomm Clang prebuilts
       run: |
-        cd kernel/oneplus/sm8550/kernel/oplus_cpu
-        rm -f thermal
-        ln -sf ../../../sm8550-modules/oplus/kernel/cpu/thermal thermal
-        cd ../../../../..
-
-    - name: Download Qualcomm Clang
-      run: |
+        mkdir -p qc-prebuilts/clang
         cd qc-prebuilts/clang
 
-        wget https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e5/clang-host-linux-x86.tar.gz
+        echo "Downloading QC Clang prebuilts..."
+        wget -q \
+        https://git.codelinaro.org/clo/la/kernelplatform/prebuilts-master/clang/host/linux-x86/-/archive/c420e3ab93e51a2f2ab4f8e8b517463c34a7e8bd/clang-host-linux-x86.tar.gz
 
-        tar -xf clang-host-linux-x86.tar.gz
-        mv clang-host-linux-x86*/ clang
+        echo "Detecting extracted folder name..."
+        EXTRACTED=$(tar -tf clang-host-linux-x86.tar.gz | head -1 | cut -f1 -d"/")
 
-    - name: Export Clang paths
-      run: |
-        echo "Using QC Clang:"
-        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang/clang
-        export PATH=$CLANG_PATH/bin:$PATH
-        clang --version
+        echo "Extracting..."
+        tar -xzf clang-host-linux-x86.tar.gz
 
-    - name: Prepare defconfig
+        echo "Renaming folder → clang/"
+        mv "$EXTRACTED" clang
+
+        echo "Final Clang Path:"
+        ls -al clang/bin
+
+    ## ============================================================
+    ## 4) Build Kernel
+    ## ============================================================
+    - name: Build kernel
       run: |
         cd kernel/oneplus/sm8550
 
-        echo "Running mrproper (fixes source tree not clean)"
+        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang/clang
+        export PATH=$CLANG_PATH/bin:$PATH
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export O=out
+
+        echo "Using Clang:"
+        clang --version
+
+        # Clean source tree (FIXES 'tree not clean' error)
+        echo "Running mrproper..."
         make ARCH=arm64 mrproper
 
         mkdir -p out
 
-        echo "Running gki_defconfig"
-        make O=out ARCH=arm64 gki_defconfig
+        echo "Running gki_defconfig..."
+        make O=$O ARCH=arm64 gki_defconfig
 
-        echo "Merging vendor configs"
+        echo "Merging vendor configs..."
         bash scripts/kconfig/merge_config.sh -m \
           out/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
-        echo "Running olddefconfig"
-        make O=out ARCH=arm64 olddefconfig
+        echo "Running olddefconfig..."
+        make O=$O ARCH=arm64 olddefconfig
 
-    - name: Build Kernel
-      run: |
-        cd kernel/oneplus/sm8550
+        echo "Starting kernel compilation..."
+        make -j$(nproc) O=$O ARCH=arm64 CC=clang
 
-        export CLANG_PATH=$GITHUB_WORKSPACE/qc-prebuilts/clang/clang
-        export PATH=$CLANG_PATH/bin:$PATH
-
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export LLVM=1
-        export LLVM_IAS=1
-
-        make -j$(nproc) O=out ARCH=arm64 CC=clang
-
-    - name: Package AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel
-        cd AnyKernel
-        cp ../kernel/oneplus/sm8550/out/arch/arm64/boot/Image .
-        zip -r kernel.zip ./*
-
-    - name: Upload to GitHub Releases
-      uses: softprops/action-gh-release@v1
+    ## ============================================================
+    ## 5) Upload Kernel Image
+    ## ============================================================
+    - name: Upload kernel Image
+      uses: actions/upload-artifact@v3
       with:
-        files: AnyKernel/kernel.zip
-        tag_name: build-${{ github.run_number }}
-        name: Kernel Build ${{ github.run_number }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: kernel-image
+        path: kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz
