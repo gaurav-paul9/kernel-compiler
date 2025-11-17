@@ -1,5 +1,4 @@
-name: Build OnePlus 12R Kernel (GKI)
-
+name: Build OnePlus 12R Kernel
 on:
   workflow_dispatch:
 
@@ -9,54 +8,67 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout this repo
-      uses: actions/checkout@v4
+    # -----------------------
+    # Swap + Dependencies
+    # -----------------------
+    - name: Add swap
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 10
 
-    - name: Prepare environment
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          git curl xz-utils lz4 libelf-dev build-essential bc flex bison \
-          dwarves python3 device-tree-compiler ccache
+          git curl wget ccache bc bison flex build-essential \
+          dwarves libelf-dev libssl-dev \
+          device-tree-compiler python3
 
-    - name: Create workspace
+    # -----------------------
+    # Prepare workspace
+    # -----------------------
+    - name: Prepare workspace dirs
       run: |
         mkdir -p kernel/oneplus
         mkdir -p toolchains
 
-    - name: Clone kernel source
+    # -----------------------
+    # Clone kernel source
+    # -----------------------
+    - name: Clone Kernel Source
       run: |
-        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550 \
-          kernel/oneplus/sm8550 --depth=1
+        cd kernel/oneplus
+        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git -b lineage-23.0 sm8550 --depth=1
 
-    - name: Clone kernel modules
+    # -----------------------
+    # Clone modules repo
+    # -----------------------
+    - name: Clone Kernel Modules (sm8550-modules)
       run: |
-        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules \
-          kernel/oneplus/sm8550-modules --depth=1
+        cd kernel/oneplus
+        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
+          -b lineage-23.0 sm8550-modules --depth=1
 
-    - name: Clone Alphadroid Clang r547379
+    # -----------------------
+    # Clone AlphaDroid Clang r547379
+    # -----------------------
+    - name: Download Clang (AlphaDroid r547379)
       run: |
         cd toolchains
-        git clone https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git clang --depth=1
-        cd ..
+        git clone https://gitlab.com/alphadroid-project/prebuilts_clang_host_linux-x86_clang-r547379.git clang
+        chmod -R +x clang/bin
 
-    - name: Setup Clang
+    # -----------------------
+    # Build kernel
+    # -----------------------
+    - name: Build Kernel
       run: |
-        export PATH=$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH
-        echo "PATH=$PATH" >> $GITHUB_ENV
+        KERNEL_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550
+        MODULES_DIR=$GITHUB_WORKSPACE/kernel/oneplus/sm8550-modules
+        OUT=$KERNEL_DIR/out
+        CLANG=$GITHUB_WORKSPACE/toolchains/clang
 
-    - name: Configure Kernel (mrproper + defconfigs)
-      run: |
-        KERNEL=kernel/oneplus/sm8550
-        OUT=$KERNEL/out
-
-        cd $KERNEL
-
-        # Full clean – fixes "source tree is not clean"
-        make mrproper
-
-        mkdir -p $OUT
-
+        export PATH=$CLANG/bin:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
         export CC=clang
@@ -64,47 +76,65 @@ jobs:
         export LLVM=1
         export LLVM_IAS=1
 
-        echo "Using GKI defconfig + vendor configs"
+        cd $KERNEL_DIR
 
+        echo "Cleaning source tree..."
+        make mrproper
+
+        echo "Creating OUT directory..."
+        mkdir -p $OUT
+
+        echo "Running base defconfig..."
         make O=$OUT gki_defconfig
 
+        echo "Merging vendor configs..."
         bash scripts/kconfig/merge_config.sh -m \
           $OUT/.config \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
 
+        echo "Finalizing kernel config..."
         make O=$OUT olddefconfig
 
-    - name: Build kernel
+        echo "Building kernel Image..."
+        make -j$(nproc --all) O=$OUT
+
+    # -----------------------
+    # Package AnyKernel3
+    # -----------------------
+    - name: Pack AnyKernel3
       run: |
-        KERNEL=kernel/oneplus/sm8550
-        OUT=$KERNEL/out
-        THREADS=$(nproc --all)
+        cd $GITHUB_WORKSPACE
+        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1 AnyKernel3
+        rm -rf AnyKernel3/.git
 
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CC=clang
-        export CXX=clang++
-        export LLVM=1
-        export LLVM_IAS=1
-        export PATH=$GITHUB_WORKSPACE/toolchains/clang/bin:$PATH
+        OUT=$GITHUB_WORKSPACE/kernel/oneplus/sm8550/out
 
-        cd $KERNEL
+        if [ -f $OUT/arch/arm64/boot/Image ]; then
+          cp $OUT/arch/arm64/boot/Image AnyKernel3/
+        fi
+        if [ -f $OUT/arch/arm64/boot/Image.gz-dtb ]; then
+          cp $OUT/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        fi
+        if [ -f $OUT/arch/arm64/boot/dtbo.img ]; then
+          cp $OUT/arch/arm64/boot/dtbo.img AnyKernel3/
+        fi
 
-        make -j$THREADS O=$OUT
-
-    - name: Prepare AnyKernel3 package
-      run: |
-        cd kernel
-        git clone https://github.com/Kernel-SU/AnyKernel3 --depth=1
-
-        # Copy kernel image(s)
-        cp oneplus/sm8550/out/arch/arm64/boot/Image* AnyKernel3/ || true
-        cp oneplus/sm8550/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
-
-    - name: Upload Flashable Kernel
+    # -----------------------
+    # Upload Kernel Output
+    # -----------------------
+    - name: Upload Image
       uses: actions/upload-artifact@v4
       with:
-        name: OnePlus12R-GKI-Kernel
-        path: kernel/AnyKernel3/*
+        name: kernel-image
+        path: |
+          kernel/oneplus/sm8550/out/arch/arm64/boot/Image
+          kernel/oneplus/sm8550/out/arch/arm64/boot/Image.gz-dtb
+          kernel/oneplus/sm8550/out/arch/arm64/boot/dtbo.img
+
+    - name: Upload AnyKernel3
+      uses: actions/upload-artifact@v4
+      with:
+        name: AnyKernel3-Flashable
+        path: AnyKernel3/*
