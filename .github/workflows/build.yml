@@ -48,7 +48,6 @@ jobs:
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
-        free -h
 
     - name: Download AOSP Clang r547379
       run: |
@@ -71,29 +70,31 @@ jobs:
 
     - name: Generate gki_defconfig (Base)
       run: |
-        make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out gki_defconfig
+        make -C kernel/oneplus/sm8550 \
+          O=$GITHUB_WORKSPACE/out \
+          gki_defconfig
 
     - name: Merge vendor + oplus + debugfs configs
       run: |
         cd kernel/oneplus/sm8550
-        scripts/kconfig/merge_config.sh \
+        scripts/kconfig/merge_config.sh -m \
           $GITHUB_WORKSPACE/out/.config \
-          arch/arm64/configs/gki_defconfig
+          arch/arm64/configs/gki_defconfig \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
-          arch/arm64/configs/vendor/debugfs.config \
- 
+          arch/arm64/configs/vendor/debugfs.config
+
     - name: Cleanup merge_config temporary files
       run: |
         cd kernel/oneplus/sm8550
-        rm -f .config
         rm -rf include/config include/generated
         rm -f scripts/kconfig/.tmp*
-        cd $GITHUB_WORKSPACE
 
     - name: Finalize Config (olddefconfig)
       run: |
-        make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out olddefconfig
+        make -C kernel/oneplus/sm8550 \
+          O=$GITHUB_WORKSPACE/out \
+          olddefconfig
 
     ###########################################################################
     #                             KERNEL BUILD                                 #
@@ -101,7 +102,9 @@ jobs:
 
     - name: Build Kernel
       run: |
-        make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out -j$(nproc)
+        make -C kernel/oneplus/sm8550 \
+          O=$GITHUB_WORKSPACE/out \
+          -j$(nproc)
 
     ###########################################################################
     #                              PACKAGE OUTPUT                             #
@@ -112,7 +115,6 @@ jobs:
         cd out/arch/arm64/boot
         zip -r9 $GITHUB_WORKSPACE/kernel.zip \
           Image Image.gz* dtb* dtbo* 2>/dev/null || true
-        cd $GITHUB_WORKSPACE
 
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
