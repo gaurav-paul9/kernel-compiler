@@ -48,6 +48,7 @@ jobs:
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
+        free -h
 
     - name: Download AOSP Clang r547379
       run: |
@@ -57,20 +58,26 @@ jobs:
           https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
         mkdir clang-r547379
         tar -xf clang.tar.gz -C clang-r547379
+        cd $GITHUB_WORKSPACE
 
     - name: Export Clang to PATH
-      run: echo "$PWD/prebuilts/clang/clang-r547379/bin" >> $GITHUB_PATH
+      run: echo "$GITHUB_WORKSPACE/prebuilts/clang/clang-r547379/bin" >> $GITHUB_PATH
 
     - name: Prepare Out Directory
       run: mkdir -p out
 
     ###########################################################################
-    #                         CONFIG GENERATION (4 FILES)                     
+    #                         CONFIG GENERATION (CLEAN FIRST)                 #
     ###########################################################################
 
     - name: Clean Kernel Source (mrproper)
       run: |
-        make -C kernel/oneplus/sm8550 mrproper
+        cd kernel/oneplus/sm8550
+        # Fully clean the source tree so merge_config and make won't complain.
+        make mrproper
+        # Ensure no stray generated files remain
+        rm -rf .config include/config include/generated scripts/kconfig/.tmp* || true
+        cd $GITHUB_WORKSPACE
 
     - name: Generate gki_defconfig (Base)
       run: |
@@ -81,18 +88,23 @@ jobs:
     - name: Merge vendor + oplus + debugfs configs
       run: |
         cd kernel/oneplus/sm8550
+        # Merge fragments into the out/.config (use -m to preserve ordering)
         scripts/kconfig/merge_config.sh -m \
           $GITHUB_WORKSPACE/out/.config \
           arch/arm64/configs/gki_defconfig \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
           arch/arm64/configs/vendor/debugfs.config
+        cd $GITHUB_WORKSPACE
 
-    - name: Cleanup merge_config temporary files
+    - name: Cleanup merge_config temporary files (source)
       run: |
         cd kernel/oneplus/sm8550
+        # remove any generated files that merge_config might have left in the source
+        rm -f .config
         rm -rf include/config include/generated
         rm -f scripts/kconfig/.tmp*
+        cd $GITHUB_WORKSPACE
 
     - name: Finalize Config (olddefconfig)
       run: |
@@ -101,7 +113,7 @@ jobs:
           olddefconfig
 
     ###########################################################################
-    #                             KERNEL BUILD                                 #
+    #                             KERNEL BUILD                                #
     ###########################################################################
 
     - name: Build Kernel
@@ -119,6 +131,7 @@ jobs:
         cd out/arch/arm64/boot
         zip -r9 $GITHUB_WORKSPACE/kernel.zip \
           Image Image.gz* dtb* dtbo* 2>/dev/null || true
+        cd $GITHUB_WORKSPACE
 
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
