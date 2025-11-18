@@ -39,7 +39,7 @@ jobs:
           bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
           git gperf libncurses5-dev libssl-dev libxml2-utils \
           python3 python-is-python3 unzip xz-utils zip zlib1g-dev \
-          libelf-dev dwarves
+          libelf-dev dwarves mkbootimg
 
     - name: Create 8GB Swap
       run: |
@@ -69,26 +69,15 @@ jobs:
     #                         CONFIG GENERATION (4 FILES)                     #
     ###########################################################################
 
-    - name: Generate gki_defconfig (Base)
-      run: |
-        make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out gki_defconfig
-
-    - name: Merge vendor + oplus + debugfs configs
+    - name: Merge all 4 defconfigs
       run: |
         cd kernel/oneplus/sm8550
-        scripts/kconfig/merge_config.sh \
-          $GITHUB_WORKSPACE/out/.config \
+        scripts/kconfig/merge_config.sh -m \
+          arch/arm64/configs/gki_defconfig \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
-          arch/arm64/configs/vendor/debugfs.config
-
-    - name: Cleanup merge_config temporary files
-      run: |
-        cd kernel/oneplus/sm8550
-        rm -f .config
-        rm -rf include/config include/generated
-        rm -f scripts/kconfig/.tmp*
-        cd $GITHUB_WORKSPACE
+          arch/arm64/configs/vendor/debugfs.config \
+          -O $GITHUB_WORKSPACE/out
 
     - name: Finalize Config (olddefconfig)
       run: |
@@ -103,18 +92,63 @@ jobs:
         make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out -j$(nproc)
 
     ###########################################################################
-    #                              PACKAGE OUTPUT                             #
+    #                             PACKAGE OUTPUT                               #
     ###########################################################################
 
-    - name: Package Kernel
+    - name: Package Kernel Files
       run: |
         cd out/arch/arm64/boot
         zip -r9 $GITHUB_WORKSPACE/kernel.zip \
           Image Image.gz* dtb* dtbo* 2>/dev/null || true
-        cd $GITHUB_WORKSPACE
 
-    - name: Upload Kernel Artifact
-      uses: actions/upload-artifact@v4
+    ###########################################################################
+    #                               BOOT.IMG                                  
+    ###########################################################################
+
+    - name: Build boot.img
+      run: |
+        mkdir -p bootimg
+        mkbootimg \
+          --kernel out/arch/arm64/boot/Image.gz \
+          --ramdisk out/ramdisk \
+          --dtb out/arch/arm64/boot/dtb \
+          --pagesize 4096 \
+          --base 0x00000000 \
+          --cmdline "" \
+          -o bootimg/boot.img
+
+    ###########################################################################
+    #                             ANYKERNEL3 ZIP                               #
+    ###########################################################################
+
+    - name: Clone AnyKernel3 Template
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3.git anykernel
+        rm -rf anykernel/.git
+
+    - name: Copy Kernel Files into AnyKernel3
+      run: |
+        cp out/arch/arm64/boot/Image.gz anykernel/
+        cp out/arch/arm64/boot/dtb* anykernel/ || true
+        cp out/arch/arm64/boot/dtbo* anykernel/ || true
+
+    - name: Create AnyKernel ZIP
+      run: |
+        cd anykernel
+        zip -r9 $GITHUB_WORKSPACE/AnyKernel3.zip ./*
+
+    ###########################################################################
+    #                      UPLOAD TO GITHUB RELEASES                           #
+    ###########################################################################
+
+    - name: Create GitHub Release & Upload Files
+      uses: softprops/action-gh-release@v2
       with:
-        name: kernel-build
-        path: kernel.zip
+        name: "SM8550 Kernel Build"
+        tag_name: "build-${{ github.run_id }}"
+        files: |
+          kernel.zip
+          bootimg/boot.img
+          AnyKernel3.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
