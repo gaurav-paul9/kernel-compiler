@@ -42,10 +42,10 @@ jobs:
     # ---------------------------------------------------------------
     # Add 8GB Swap to prevent OOM
     # ---------------------------------------------------------------
-    - name: Add 8GB Swap
+    - name: Add 6GB Swap
       run: |
         sudo swapoff -a
-        sudo fallocate -l 8G /swapfile
+        sudo fallocate -l 6G /swapfile
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
