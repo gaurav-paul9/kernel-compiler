@@ -65,8 +65,12 @@ jobs:
       run: mkdir -p out
 
     ###########################################################################
-    #                         CONFIG GENERATION (4 FILES)                     #
+    #                         CONFIG GENERATION (4 FILES)                     
     ###########################################################################
+
+    - name: Clean Kernel Source (mrproper)
+      run: |
+        make -C kernel/oneplus/sm8550 mrproper
 
     - name: Generate gki_defconfig (Base)
       run: |
