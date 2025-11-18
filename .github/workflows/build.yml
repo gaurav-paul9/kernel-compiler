@@ -56,7 +56,7 @@ jobs:
         cd prebuilts/clang
         curl -L -o clang.tar.gz \
           https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
-        mkdir -p clang-r547379
+        mkdir clang-r547379
         tar -xf clang.tar.gz -C clang-r547379
         cd $GITHUB_WORKSPACE
 
@@ -67,61 +67,38 @@ jobs:
       run: mkdir -p out
 
     ###########################################################################
-    #                         CONFIG GENERATION (CLEAN FIRST)                 #
+    #                         CLEAN + CONFIG GENERATION                       #
     ###########################################################################
-
-    - name: Diagnostic - kernel tree before cleaning
-      run: |
-        echo "=== kernel/oneplus/sm8550 before mrproper ==="
-        ls -la kernel/oneplus/sm8550 | sed -n '1,120p'
 
     - name: Clean Kernel Source (mrproper)
       run: |
         cd kernel/oneplus/sm8550
-        # Fully clean the source tree so merge_config and make won't complain.
         make mrproper
-        # Ensure no stray generated files remain
         rm -f .config
         rm -rf include/config include/generated
         rm -f scripts/kconfig/.tmp* || true
         cd $GITHUB_WORKSPACE
 
-    - name: Diagnostic - kernel tree after cleaning
-      run: |
-        echo "=== kernel/oneplus/sm8550 after mrproper ==="
-        ls -la kernel/oneplus/sm8550 | sed -n '1,120p'
-
-    - name: Generate gki_defconfig (Base) into out
+    - name: Generate gki_defconfig
       run: |
         make -C kernel/oneplus/sm8550 \
           O=$GITHUB_WORKSPACE/out \
           gki_defconfig
 
-    - name: Merge all device config fragments (4-layer merge)
+    - name: Merge the 4 required config fragments
       run: |
         cd kernel/oneplus/sm8550
-        # Merge in correct order: base then vendor fragments then device vendor then debugfs
         scripts/kconfig/merge_config.sh -m \
           arch/arm64/configs/gki_defconfig \
           arch/arm64/configs/vendor/kalama_GKI.config \
           arch/arm64/configs/vendor/oplus/kalama_GKI.config \
-          arch/arm64/configs/vendor/vendor_kalama.config \
           arch/arm64/configs/vendor/debugfs.config
-        # Move final merged config to the out directory (where make expects it)
         mv .config $GITHUB_WORKSPACE/out/.config
         cd $GITHUB_WORKSPACE
 
-    - name: Diagnostic - show merged config summary
-      run: |
-        echo "=== head of merged out/.config ==="
-        head -n 120 out/.config || true
-        echo "=== tail of merged out/.config ==="
-        tail -n 60 out/.config || true
-
-    - name: Cleanup merge_config temporary files (source)
+    - name: Cleanup merge_config temporary files
       run: |
         cd kernel/oneplus/sm8550
-        # remove any generated files that merge_config might have left in the source
         rm -f .config
         rm -rf include/config include/generated
         rm -f scripts/kconfig/.tmp*
@@ -138,11 +115,7 @@ jobs:
     ###########################################################################
 
     - name: Build Kernel
-      env:
-        # optional: enable ccache for speed if available
-        CCACHE_DIR: ${{ runner.temp }}/ccache
       run: |
-        # adjust -j if you want to limit parallelism
         make -C kernel/oneplus/sm8550 \
           O=$GITHUB_WORKSPACE/out \
           -j$(nproc)
