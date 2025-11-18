@@ -134,7 +134,7 @@ jobs:
     # Upload Kernel Modules
     # ---------------------------------------------------------------
     - name: Upload Kernel Modules
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Kernel-Modules
         path: modules_out
