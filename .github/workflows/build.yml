@@ -17,7 +17,7 @@ jobs:
         sudo apt install -y bc bison flex build-essential zip \
             gcc-aarch64-linux-gnu libc6-dev libncurses-dev \
             g++-aarch64-linux-gnu python3 wget jq rsync cpio \
-            libssl-dev python-is-python3
+            libssl-dev python-is-python3 mkbootimg
 
     - name: Setup Swap (6GB)
       run: |
@@ -58,10 +58,9 @@ jobs:
 
     - name: Step 2 — Base GKI Config
       run: |
-        make -C kernel/oneplus/sm8550 \
-          ARCH=arm64 O=$GITHUB_WORKSPACE/out gki_defconfig
+        make -C kernel/oneplus/sm8550 ARCH=arm64 O=$GITHUB_WORKSPACE/out gki_defconfig
 
-    - name: Step 3 — Merge Vendor Configs (Correct way)
+    - name: Step 3 — Merge Vendor Configs
       run: |
         cd kernel/oneplus/sm8550
         KCONFIG_CONFIG=$GITHUB_WORKSPACE/out/.config \
@@ -73,47 +72,26 @@ jobs:
 
     - name: Step 4 — Finalize Config
       run: |
-        make -C kernel/oneplus/sm8550 \
-          ARCH=arm64 O=$GITHUB_WORKSPACE/out olddefconfig
+        make -C kernel/oneplus/sm8550 ARCH=arm64 O=$GITHUB_WORKSPACE/out olddefconfig
 
     - name: Step 5 — Build Kernel
       run: |
-        make -C kernel/oneplus/sm8550 \
-          ARCH=arm64 O=$GITHUB_WORKSPACE/out -j$(nproc)
+        make -C kernel/oneplus/sm8550 ARCH=arm64 O=$GITHUB_WORKSPACE/out -j$(nproc)
 
     - name: Copy Kernel Image + DTBs
       run: |
         mkdir final
-        cp out/arch/arm64/boot/Image final/
-        cp -r out/arch/arm64/boot/dts final/dts
+        cp out/arch/arm64/boot/Image final/Image
+        find out/arch/arm64/boot/dts -name "*.dtb" -exec cat {} + > final/dtb
 
     - name: Package boot.img
       run: |
-        cd final
-        # Creating mkbootimg compatible structure
-        mkdir ramdisk
-        echo "placeholder" > ramdisk/init   # minimal init to avoid empty ramdisk
-
-        mkdir bootimg
-        cp Image bootimg/kernel
-
-        # Pack DTB into single dtb
-        find dts -name "*.dtb" -exec cat {} + > bootimg/dtb
-
-        # Make flashable boot.img
-        python3 - << 'EOF'
-import subprocess
-subprocess.run([
-    "mkbootimg",
-    "--kernel", "bootimg/kernel",
-    "--dtb", "bootimg/dtb",
-    "--pagesize", "4096",
-    "--base", "0x00000000",
-    "--output", "boot.img"
-])
-EOF
-
-        cd ..
+        mkbootimg \
+          --kernel final/Image \
+          --dtb final/dtb \
+          --pagesize 4096 \
+          --base 0x00000000 \
+          --output final/boot.img
 
     - name: Upload Output
       uses: actions/upload-artifact@v3
