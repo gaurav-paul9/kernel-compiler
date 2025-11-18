@@ -13,7 +13,7 @@ jobs:
     # Clone kernel source
     # ---------------------------------------------------------------
     - name: Checkout Kernel Source
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       with:
         repository: gaurav-paul9/android_kernel_oneplus_sm8550
         ref: lineage-23.0
@@ -23,7 +23,7 @@ jobs:
     # Clone kernel modules
     # ---------------------------------------------------------------
     - name: Checkout Kernel Modules
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       with:
         repository: LineageOS/android_kernel_oneplus_sm8550-modules
         ref: lineage-23.0
@@ -40,6 +40,18 @@ jobs:
            libelf-dev build-essential ccache wget curl unzip
 
     # ---------------------------------------------------------------
+    # Add 8GB Swap to prevent OOM
+    # ---------------------------------------------------------------
+    - name: Add 8GB Swap
+      run: |
+        sudo swapoff -a
+        sudo fallocate -l 8G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        free -h
+
+    # ---------------------------------------------------------------
     # Download Clang r547379
     # ---------------------------------------------------------------
     - name: Download AOSP Clang r547379
@@ -50,7 +62,6 @@ jobs:
 
     # ---------------------------------------------------------------
     # Export all environment variables
-    # EXACT SAME VARIABLES AS YOUR WORKING LOCAL BUILD
     # ---------------------------------------------------------------
     - name: Export Build Environment
       run: |
@@ -75,7 +86,7 @@ jobs:
         echo "LLVM_IAS=1" >> $GITHUB_ENV
 
     # ---------------------------------------------------------------
-    # Build Kernel (ALL working commands exactly as you tested)
+    # Build Kernel
     # ---------------------------------------------------------------
     - name: Build Kernel
       working-directory: kernel/oneplus/sm8550
@@ -107,10 +118,10 @@ jobs:
         cp -r out/lib/modules/* $GITHUB_WORKSPACE/modules_out/
 
     # ---------------------------------------------------------------
-    # Upload Kernel Images + DTBs
+    # Upload Kernel Artifacts
     # ---------------------------------------------------------------
     - name: Upload Kernel Artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: Kernel-Images
         path: |
@@ -123,7 +134,7 @@ jobs:
     # Upload Kernel Modules
     # ---------------------------------------------------------------
     - name: Upload Kernel Modules
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
         name: Kernel-Modules
         path: modules_out
