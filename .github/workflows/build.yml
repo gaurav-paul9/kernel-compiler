@@ -1,4 +1,4 @@
-name: OnePlus SM8550 Kernel Build
+name: Kernel-Compiler
 
 on:
   workflow_dispatch:
@@ -8,43 +8,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Empty Workspace
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    ###########################################################################
-    #                            CLONE KERNEL SOURCES                         #
-    ###########################################################################
-
-    - name: Clone Main Kernel Source
-      run: |
-        mkdir -p kernel/oneplus
-        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git \
-          -b lineage-23.0 kernel/oneplus/sm8550 --depth=1
-
-    - name: Clone Kernel Modules
-      run: |
-        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git \
-          -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
-
-    ###########################################################################
-    #                              SYSTEM SETUP                               #
-    ###########################################################################
+    - name: Checkout
+      uses: actions/checkout@v3
 
     - name: Install Dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
-          git gperf libncurses5-dev libssl-dev libxml2-utils \
-          python3 python-is-python3 unzip xz-utils zip zlib1g-dev \
-          libelf-dev dwarves mkbootimg
+        sudo apt update
+        sudo apt install -y bc bison flex build-essential zip \
+            gcc-aarch64-linux-gnu libc6-dev libncurses-dev \
+            g++-aarch64-linux-gnu python3 wget jq rsync cpio \
+            libssl-dev python-is-python3
 
-    - name: Create 8GB Swap
+    - name: Setup Swap (6GB)
       run: |
-        sudo swapoff -a || true
-        sudo fallocate -l 8G /swapfile
+        sudo fallocate -l 6G /swapfile
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
@@ -52,103 +29,94 @@ jobs:
 
     - name: Download AOSP Clang r547379
       run: |
-        mkdir -p prebuilts/clang
-        cd prebuilts/clang
-        curl -L -o clang.tar.gz \
-          https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
-        mkdir clang-r547379
-        tar -xf clang.tar.gz -C clang-r547379
+        mkdir -p clang
+        cd clang
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang.tar.gz
+        tar -xf clang.tar.gz
+        cd ..
 
-    - name: Export Clang to PATH
-      run: echo "$PWD/prebuilts/clang/clang-r547379/bin" >> $GITHUB_PATH
+    - name: Export Build Vars
+      run: |
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "CLANG_PATH=$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_ENV
+        echo "PATH=$GITHUB_WORKSPACE/clang/bin:$PATH" >> $GITHUB_ENV
 
-    - name: Prepare Out Directory
-      run: mkdir -p out
+    - name: Clone Kernel Sources
+      run: |
+        mkdir -p kernel/oneplus
+        git clone https://github.com/gaurav-paul9/android_kernel_oneplus_sm8550.git -b lineage-23.0 kernel/oneplus/sm8550 --depth=1
+        git clone https://github.com/LineageOS/android_kernel_oneplus_sm8550-modules.git -b lineage-23.0 kernel/oneplus/sm8550-modules --depth=1
 
-    ###########################################################################
-    #                         CONFIG GENERATION (4 FILES)                     #
-    ###########################################################################
+    - name: Create OUT Directory
+      run: |
+        mkdir out
 
-    - name: Merge all 4 defconfigs
+    - name: Step 1 — Clean Tree
+      run: |
+        make -C kernel/oneplus/sm8550 mrproper
+
+    - name: Step 2 — Base GKI Config
+      run: |
+        make -C kernel/oneplus/sm8550 \
+          ARCH=arm64 O=$GITHUB_WORKSPACE/out gki_defconfig
+
+    - name: Step 3 — Merge Vendor Configs (Correct way)
       run: |
         cd kernel/oneplus/sm8550
+        KCONFIG_CONFIG=$GITHUB_WORKSPACE/out/.config \
         scripts/kconfig/merge_config.sh -m \
-          arch/arm64/configs/gki_defconfig \
-          arch/arm64/configs/vendor/kalama_GKI.config \
-          arch/arm64/configs/vendor/oplus/kalama_GKI.config \
-          arch/arm64/configs/vendor/debugfs.config \
-          -O $GITHUB_WORKSPACE/out
+            arch/arm64/configs/gki_defconfig \
+            arch/arm64/configs/vendor/kalama_GKI.config \
+            arch/arm64/configs/vendor/oplus/kalama_GKI.config \
+            arch/arm64/configs/vendor/debugfs.config
 
-    - name: Finalize Config (olddefconfig)
+    - name: Step 4 — Finalize Config
       run: |
-        make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out olddefconfig
+        make -C kernel/oneplus/sm8550 \
+          ARCH=arm64 O=$GITHUB_WORKSPACE/out olddefconfig
 
-    ###########################################################################
-    #                             KERNEL BUILD                                 #
-    ###########################################################################
-
-    - name: Build Kernel
+    - name: Step 5 — Build Kernel
       run: |
-        make -C kernel/oneplus/sm8550 O=$GITHUB_WORKSPACE/out -j$(nproc)
+        make -C kernel/oneplus/sm8550 \
+          ARCH=arm64 O=$GITHUB_WORKSPACE/out -j$(nproc)
 
-    ###########################################################################
-    #                             PACKAGE OUTPUT                               #
-    ###########################################################################
-
-    - name: Package Kernel Files
+    - name: Copy Kernel Image + DTBs
       run: |
-        cd out/arch/arm64/boot
-        zip -r9 $GITHUB_WORKSPACE/kernel.zip \
-          Image Image.gz* dtb* dtbo* 2>/dev/null || true
+        mkdir final
+        cp out/arch/arm64/boot/Image final/
+        cp -r out/arch/arm64/boot/dts final/dts
 
-    ###########################################################################
-    #                               BOOT.IMG                                  
-    ###########################################################################
-
-    - name: Build boot.img
+    - name: Package boot.img
       run: |
-        mkdir -p bootimg
-        mkbootimg \
-          --kernel out/arch/arm64/boot/Image.gz \
-          --ramdisk out/ramdisk \
-          --dtb out/arch/arm64/boot/dtb \
-          --pagesize 4096 \
-          --base 0x00000000 \
-          --cmdline "" \
-          -o bootimg/boot.img
+        cd final
+        # Creating mkbootimg compatible structure
+        mkdir ramdisk
+        echo "placeholder" > ramdisk/init   # minimal init to avoid empty ramdisk
 
-    ###########################################################################
-    #                             ANYKERNEL3 ZIP                               #
-    ###########################################################################
+        mkdir bootimg
+        cp Image bootimg/kernel
 
-    - name: Clone AnyKernel3 Template
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3.git anykernel
-        rm -rf anykernel/.git
+        # Pack DTB into single dtb
+        find dts -name "*.dtb" -exec cat {} + > bootimg/dtb
 
-    - name: Copy Kernel Files into AnyKernel3
-      run: |
-        cp out/arch/arm64/boot/Image.gz anykernel/
-        cp out/arch/arm64/boot/dtb* anykernel/ || true
-        cp out/arch/arm64/boot/dtbo* anykernel/ || true
+        # Make flashable boot.img
+        python3 - << 'EOF'
+import subprocess
+subprocess.run([
+    "mkbootimg",
+    "--kernel", "bootimg/kernel",
+    "--dtb", "bootimg/dtb",
+    "--pagesize", "4096",
+    "--base", "0x00000000",
+    "--output", "boot.img"
+])
+EOF
 
-    - name: Create AnyKernel ZIP
-      run: |
-        cd anykernel
-        zip -r9 $GITHUB_WORKSPACE/AnyKernel3.zip ./*
+        cd ..
 
-    ###########################################################################
-    #                      UPLOAD TO GITHUB RELEASES                           #
-    ###########################################################################
-
-    - name: Create GitHub Release & Upload Files
-      uses: softprops/action-gh-release@v2
+    - name: Upload Output
+      uses: actions/upload-artifact@v3
       with:
-        name: "SM8550 Kernel Build"
-        tag_name: "build-${{ github.run_id }}"
-        files: |
-          kernel.zip
-          bootimg/boot.img
-          AnyKernel3.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: compiled-kernel
+        path: final/boot.img
