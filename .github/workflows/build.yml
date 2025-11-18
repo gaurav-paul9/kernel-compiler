@@ -13,7 +13,7 @@ jobs:
     # Clone kernel source
     # ---------------------------------------------------------------
     - name: Checkout Kernel Source
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         repository: gaurav-paul9/android_kernel_oneplus_sm8550
         ref: lineage-23.0
@@ -23,7 +23,7 @@ jobs:
     # Clone kernel modules
     # ---------------------------------------------------------------
     - name: Checkout Kernel Modules
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         repository: LineageOS/android_kernel_oneplus_sm8550-modules
         ref: lineage-23.0
@@ -110,7 +110,7 @@ jobs:
     # Upload Kernel Images + DTBs
     # ---------------------------------------------------------------
     - name: Upload Kernel Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Kernel-Images
         path: |
@@ -123,7 +123,7 @@ jobs:
     # Upload Kernel Modules
     # ---------------------------------------------------------------
     - name: Upload Kernel Modules
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: Kernel-Modules
         path: modules_out
